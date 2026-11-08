@@ -12,6 +12,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agent_gates.config import inside, safe_relative_dir
+
 FILENAME = re.compile(r"^(\d{4})-[a-z0-9]+(?:-[a-z0-9]+)*\.md$")
 TITLE = re.compile(r"^# (\d{4})\. (\S.*)$")
 STATUS = re.compile(r"^- Status: (\w+)\s*$", re.MULTILINE)
@@ -57,9 +59,8 @@ def slugify(title: str) -> str:
     return slug[:60].rstrip("-") or "decision"
 
 
-def parse(path: Path, root: Path) -> Decision:
-    rel = str(path.relative_to(root))
-    text = path.read_text(encoding="utf-8")
+def parse(path: Path, rel: str) -> Decision:
+    text = path.read_text(encoding="utf-8", errors="replace")
     m = FILENAME.match(path.name)
     first = text.splitlines()[0] if text else ""
     t = TITLE.match(first)
@@ -86,10 +87,15 @@ def parse(path: Path, root: Path) -> Decision:
 
 
 def load(root: Path, decisions_dir: str) -> list[Decision]:
-    base = root / decisions_dir
+    rel = safe_relative_dir(decisions_dir, "decisions_dir")
+    base = inside(root, rel)
     if not base.is_dir():
         return []
-    return [parse(p, root) for p in sorted(base.glob("*.md")) if p.name.lower() != "readme.md"]
+    return [
+        parse(inside(root, f"{rel}/{p.name}"), f"{rel}/{p.name}")
+        for p in sorted(base.glob("*.md"))
+        if p.name.lower() != "readme.md"
+    ]
 
 
 def check(root: Path, decisions_dir: str) -> list[str]:
@@ -130,7 +136,7 @@ def new(
         raise DecisionError("a decision needs a title")
     if len(title) > 120:
         raise DecisionError("keep the title under 120 characters")
-    base = root / decisions_dir
+    base = inside(root, safe_relative_dir(decisions_dir, "decisions_dir"))
     base.mkdir(parents=True, exist_ok=True)
     existing = [d.number for d in load(root, decisions_dir) if d.number]
     number = f"{max(existing, default=0) + 1:04d}"

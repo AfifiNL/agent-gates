@@ -8,11 +8,16 @@ from agent_gates.repo import Repo
 from conftest import CONFIG, commit
 
 
+def own(rec: gate.GateRecord) -> list[gate.StepResult]:
+    """The configured steps (the built-in checks come first)."""
+    return [s for s in rec.steps if not s.name.startswith("builtin:")]
+
+
 def test_gate_passes_and_records_by_full_sha(repo: Repo) -> None:
     rec = gate.run_gate(repo.git, repo.state(), repo.config(), "HEAD")
     assert rec.passed
     assert len(rec.sha) == 40
-    assert rec.steps[0].exit_code == 0
+    assert own(rec)[0].exit_code == 0
     stored = gate.get_record(repo.git, repo.state(), rec.sha)
     assert stored == rec
     assert gate.verify(repo.git, repo.state(), repo.config(), "main") == (
@@ -25,8 +30,8 @@ def test_gate_fails_on_a_failing_step(repo: Repo) -> None:
     commit(repo.root, {"calc.py": "def add(a, b):\n    return a - b\n"})
     rec = gate.run_gate(repo.git, repo.state(), repo.config(), "HEAD")
     assert not rec.passed
-    assert rec.steps[0].exit_code != 0
-    assert "FAIL" in rec.steps[0].output_tail
+    assert own(rec)[0].exit_code != 0
+    assert "FAIL" in own(rec)[0].output_tail
 
 
 def test_uncommitted_fix_does_not_count(repo: Repo) -> None:
@@ -43,23 +48,30 @@ def test_a_record_never_counts_for_another_commit(repo: Repo) -> None:
     assert "no gate record" in message
 
 
-def test_record_under_an_older_config_does_not_verify(repo: Repo) -> None:
+def test_record_under_an_unrelated_config_does_not_verify(repo: Repo) -> None:
+    other = config.parse('[[gate.steps]]\nname = "x"\nrun = "true"\n')
+    sha = gate.run_gate(repo.git, repo.state(), other, "HEAD").sha
+    ok, message = gate.verify(repo.git, repo.state(), repo.config(), sha)
+    assert not ok
+    assert "different configuration" in message
+
+
+def test_older_commit_still_verifies_under_its_own_config(repo: Repo) -> None:
     first = gate.run_gate(repo.git, repo.state(), repo.config(), "HEAD").sha
     stricter = CONFIG + '\n[[gate.steps]]\nname = "lint"\nrun = "true"\n'
     commit(repo.root, {".agent-gates.toml": stricter})  # main now has a stricter gate
-    ok, message = gate.verify(repo.git, repo.state(), repo.config(), first)
-    assert not ok
-    assert "different configuration" in message
+    # the first commit was gated under the configuration committed in it
+    assert gate.verify(repo.git, repo.state(), repo.config(), first)[0]
 
 
 def test_timeout_and_missing_program(repo: Repo) -> None:
     cfg = config.parse('[[gate.steps]]\nname = "slow"\nrun = ["sleep", "5"]\ntimeout_s = 0.2\n')
     rec = gate.run_gate(repo.git, repo.state(), cfg, "HEAD")
-    assert rec.steps[0].timed_out
+    assert own(rec)[0].timed_out
     assert not rec.passed
     cfg = config.parse('[[gate.steps]]\nname = "x"\nrun = "no-such-program-xyz"\n')
     rec = gate.run_gate(repo.git, repo.state(), cfg, "HEAD")
-    assert rec.steps[0].exit_code == 127
+    assert own(rec)[0].exit_code == 127
     assert not rec.passed
 
 
@@ -72,7 +84,7 @@ def test_fail_fast_stops_after_the_first_failure(repo: Repo) -> None:
         '[[gate.steps]]\nname = "a"\nrun = "false"\n[[gate.steps]]\nname = "b"\nrun = "true"\n'
     )
     rec = gate.run_gate(repo.git, repo.state(), cfg, "HEAD")
-    assert [s.name for s in rec.steps] == ["a"]
+    assert [s.name for s in rec.steps] == ["builtin:specs", "builtin:decisions", "a"]
 
 
 def test_temporary_worktrees_are_cleaned_up(repo: Repo) -> None:
@@ -80,7 +92,7 @@ def test_temporary_worktrees_are_cleaned_up(repo: Repo) -> None:
     assert len(repo.git.worktrees()) == 1
 
 
-@pytest.mark.parametrize("ref", ["--output=/tmp/x", "", "a b", "nope"])
+@pytest.mark.parametrize("ref", ["--output=/tmp/x", "", "a b", "nope", "main\n"])
 def test_bad_refs_are_rejected(repo: Repo, ref: str) -> None:
     with pytest.raises(GitError):
         repo.git.resolve(ref)

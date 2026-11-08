@@ -9,7 +9,7 @@ from mcp import Client, StdioServerParameters
 from agent_gates import gate, lanes
 from agent_gates.mcp_server import build_server
 from agent_gates.repo import Repo
-from conftest import ROOT, commit
+from conftest import commit
 
 SPEC = """\
 # Export
@@ -103,4 +103,3 @@ def test_stdio_entry_point(repo: Repo) -> None:
             return (await client.call_tool("queue_status", {})).structured_content
 
     assert anyio.run(go) == {"queued": [], "history": []}
-    assert ROOT.exists()

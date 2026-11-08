@@ -12,7 +12,7 @@ from typing import Any
 from agent_gates import decisions, specs
 from agent_gates import queue as queue_mod
 from agent_gates.config import ConfigError
-from agent_gates.gate import get_record, run_gate, verify
+from agent_gates.gate import records, run_gate, verify
 from agent_gates.git import GitError
 from agent_gates.lanes import LaneError, list_lanes, new_lane
 from agent_gates.repo import Repo, init
@@ -25,7 +25,8 @@ def _print_json(data: Any) -> None:
 def cmd_init(repo: Repo, _: argparse.Namespace) -> int:
     for path in init(repo.root, dt.date.today().isoformat()):
         print(f"wrote {path.relative_to(repo.root)}")
-    print("commit these files on the main branch; the gate reads its configuration from there")
+    print("next: commit these files on the main branch (the gate reads its configuration from")
+    print("there), then run `agent-gates gate run main` once so the queue starts from a gated main")
     return 0
 
 
@@ -65,10 +66,17 @@ def cmd_lane_list(repo: Repo, _: argparse.Namespace) -> int:
 
 
 def cmd_gate_run(repo: Repo, args: argparse.Namespace) -> int:
-    record = run_gate(repo.git, repo.state(), repo.config(), args.ref)
+    sha = repo.git.resolve_user(args.ref)
+    record = run_gate(
+        repo.git,
+        repo.state(),
+        repo.config(),
+        sha,
+        config_from=repo.git.resolve(f"refs/heads/{repo.main}"),
+    )
     for s in record.steps:
         verdict = "pass" if s.passed else ("timeout" if s.timed_out else f"fail ({s.exit_code})")
-        print(f"  {s.name:<16} {verdict:<10} {s.duration_s:.2f}s")
+        print(f"  {s.name:<18} {verdict:<10} {s.duration_s:.2f}s")
         if not s.passed and s.output_tail:
             print("    " + s.output_tail.strip().replace("\n", "\n    "))
     print(f"gate {'PASSED' if record.passed else 'FAILED'} on {record.sha}")
@@ -76,16 +84,17 @@ def cmd_gate_run(repo: Repo, args: argparse.Namespace) -> int:
 
 
 def cmd_gate_status(repo: Repo, args: argparse.Namespace) -> int:
-    record = get_record(repo.git, repo.state(), args.ref)
-    if record is None:
-        print(f"no gate record for {repo.git.resolve(args.ref)}")
+    sha = repo.git.resolve_user(args.ref)
+    found = records(repo.git, repo.state(), sha)
+    if not found:
+        print(f"no gate record for {sha}")
         return 1
-    _print_json(record.to_json())
+    _print_json([r.to_json() for r in found])
     return 0
 
 
 def cmd_gate_verify(repo: Repo, args: argparse.Namespace) -> int:
-    ok, message = verify(repo.git, repo.state(), repo.config(), args.ref)
+    ok, message = verify(repo.git, repo.state(), repo.config(), repo.git.resolve_user(args.ref))
     print(message)
     return 0 if ok else 1
 
@@ -100,8 +109,10 @@ def cmd_queue_status(repo: Repo, _: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_queue_run(repo: Repo, _: argparse.Namespace) -> int:
-    outcomes = queue_mod.run(repo.git, repo.state(), repo.main)
+def cmd_queue_run(repo: Repo, args: argparse.Namespace) -> int:
+    outcomes = queue_mod.run(
+        repo.git, repo.state(), repo.main, allow_config_change=frozenset(args.allow_config_change)
+    )
     if not outcomes:
         print("queue is empty")
     for o in outcomes:
@@ -113,7 +124,7 @@ def cmd_queue_run(repo: Repo, _: argparse.Namespace) -> int:
 
 def cmd_decision_new(repo: Repo, args: argparse.Namespace) -> int:
     path = decisions.new(repo.root, repo.working_config().decisions_dir, args.title)
-    print(f"wrote {path.relative_to(repo.root)} (status: proposed)")
+    print(f"wrote {path.relative_to(repo.root.resolve())} (status: proposed)")
     return 0
 
 
@@ -187,7 +198,15 @@ def build_parser() -> argparse.ArgumentParser:
     g = group("queue", "the merge queue")
     leaf(g, "add", cmd_queue_add, "queue a lane").add_argument("lane")
     leaf(g, "status", cmd_queue_status, "show the queue and recent outcomes")
-    leaf(g, "run", cmd_queue_run, "merge queued lanes whose candidate passes the gate")
+    leaf(
+        g, "run", cmd_queue_run, "merge queued lanes whose candidate passes the gate"
+    ).add_argument(
+        "--allow-config-change",
+        action="append",
+        default=[],
+        metavar="LANE",
+        help="let this lane change the gate configuration (it must pass under old and new)",
+    )
     g = group("decision", "the decision log")
     leaf(g, "new", cmd_decision_new, "add a proposed decision").add_argument("title")
     leaf(g, "check", cmd_decision_check, "check numbering and statuses")

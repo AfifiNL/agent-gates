@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from agent_gates.config import inside, safe_relative_dir
+
 FILENAME = re.compile(r"^(\d{3})-[a-z0-9]+(?:-[a-z0-9]+)*\.md$")
 HEADING = re.compile(r"^##\s+(.+?)\s*$")
 CHECK_ITEM = re.compile(r"^\s*[-*]\s+\[( |x|X)\]\s+\S")
@@ -75,14 +77,17 @@ def check_text(path: str, text: str) -> SpecResult:
 
 
 def check_dir(root: Path, specs_dir: str) -> list[SpecResult]:
-    base = root / specs_dir
+    rel = safe_relative_dir(specs_dir, "specs_dir")
+    base = inside(root, rel)
     if not base.is_dir():
         return []
-    results = [
-        check_text(str(p.relative_to(root)), p.read_text(encoding="utf-8"))
-        for p in sorted(base.glob("*.md"))
-        if p.name.lower() != "readme.md"
-    ]
+    results = []
+    for p in sorted(base.glob("*.md")):
+        if p.name.lower() == "readme.md":
+            continue
+        target = inside(root, f"{rel}/{p.name}")  # a symlinked file must not point outside
+        text = target.read_text(encoding="utf-8", errors="replace")
+        results.append(check_text(f"{rel}/{p.name}", text))
     seen: dict[str, str] = {}
     for r in results:
         if r.number is None:

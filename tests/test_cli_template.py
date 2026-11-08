@@ -64,7 +64,7 @@ def test_demo(capsys: pytest.CaptureFixture[str]) -> None:
     out = capsys.readouterr().out
     assert re.search(r"multiply\s+merged", out)
     assert re.search(r"broken\s+rejected\s+gate failed", out)
-    assert re.search(r"weaken-gate\s+rejected\s+gate failed", out)
+    assert re.search(r"weaken-gate\s+rejected\s+the lane changes \.agent-gates\.toml", out)
     assert ": gate passed" in out
 
 
@@ -87,8 +87,14 @@ def test_workflow_template_is_pinned_and_least_privilege() -> None:
             if step.get("uses", "").startswith("actions/checkout@"):
                 assert step["with"]["persist-credentials"] is False
         extra = job.get("permissions", {})
-        assert set(extra) <= {"contents", "security-events"}
+        assert set(extra) <= {"contents", "security-events", "actions"}
         assert extra.get("contents", "read") == "read"
+        assert extra.get("actions", "read") == "read"
+    assert wf["jobs"]["codeql"]["permissions"] == {
+        "contents": "read",
+        "security-events": "write",
+        "actions": "read",
+    }
     sha = wf["jobs"]["secret-scan"]["env"]["GITLEAKS_SHA256"]
     assert re.fullmatch(r"[0-9a-f]{64}", sha)
     assert "sha256sum -c" in text

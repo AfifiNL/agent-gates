@@ -1,4 +1,10 @@
-"""A thin, typed wrapper around the git command line. Every call is argv-based (no shell)."""
+"""A thin, typed wrapper around the git command line. Every call is argv-based (no shell).
+
+Branches are always addressed by their full name (`refs/heads/...`). A short name like `main`
+is ambiguous in git: a tag called `main` wins over the branch, so a tag could make an ungated
+branch look gated. `resolve_user` (for refs typed by a person or an agent) tries the branch
+first and only then anything else.
+"""
 
 from __future__ import annotations
 
@@ -20,32 +26,42 @@ class Worktree:
     branch: str | None  # "refs/heads/..." or None when detached
 
 
+def _decode(data: bytes) -> str:
+    return data.decode("utf-8", "replace")
+
+
+def heads(branch: str) -> str:
+    """Full ref name of a branch."""
+    return branch if branch.startswith("refs/heads/") else f"refs/heads/{branch}"
+
+
 class Git:
     def __init__(self, repo: Path) -> None:
         self.repo = Path(repo)
 
-    def run(self, *args: str, cwd: Path | None = None, check: bool = True) -> str:
-        proc = subprocess.run(  # noqa: S603 - argv list, git from PATH
+    def _proc(self, args: tuple[str, ...], cwd: Path | None) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run(  # noqa: S603 - argv list, git from PATH
             ["git", *args],  # noqa: S607
             cwd=cwd or self.repo,
             capture_output=True,
-            text=True,
             check=False,
         )
+
+    def run(self, *args: str, cwd: Path | None = None, check: bool = True) -> str:
+        proc = self._proc(args, cwd)
         if check and proc.returncode != 0:
-            msg = (proc.stderr or proc.stdout).strip().splitlines()
+            msg = (_decode(proc.stderr) or _decode(proc.stdout)).strip().splitlines()
             raise GitError(f"git {' '.join(args)}: {msg[-1] if msg else proc.returncode}")
-        return proc.stdout.strip()
+        return _decode(proc.stdout).strip()
+
+    def attempt(self, *args: str, cwd: Path | None = None) -> tuple[bool, str]:
+        """Run git; return (success, last line of its error output)."""
+        proc = self._proc(args, cwd)
+        lines = (_decode(proc.stderr) or _decode(proc.stdout)).strip().splitlines()
+        return proc.returncode == 0, (lines[-1] if lines else "")
 
     def ok(self, *args: str, cwd: Path | None = None) -> bool:
-        proc = subprocess.run(  # noqa: S603
-            ["git", *args],  # noqa: S607
-            cwd=cwd or self.repo,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return proc.returncode == 0
+        return self._proc(args, cwd).returncode == 0
 
     def toplevel(self) -> Path:
         return Path(self.run("rev-parse", "--show-toplevel"))
@@ -54,23 +70,49 @@ class Git:
         """The shared .git directory (the same for every worktree of the repository)."""
         return Path(self.run("rev-parse", "--path-format=absolute", "--git-common-dir"))
 
+    def check_object_format(self) -> None:
+        fmt = self.run("rev-parse", "--show-object-format", check=False) or "sha1"
+        if fmt != "sha1":
+            raise GitError(f"{fmt} repositories are not supported yet (only sha1)")
+
     def resolve(self, ref: str) -> str:
-        """Full commit SHA for a ref; raises if it is not a commit."""
+        """Full commit SHA for an exact ref (`refs/heads/main`, a SHA); raises if it is not a
+        commit. Refs that could be read as git options are refused."""
         if not ref or ref.startswith("-") or any(c.isspace() or ord(c) < 32 for c in ref):
             raise GitError(f"not a valid ref: {ref!r}")
-        sha = self.run("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}", check=False)
+        sha = self.run(
+            "rev-parse", "--verify", "--quiet", "--end-of-options", f"{ref}^{{commit}}", check=False
+        )
         if len(sha) != SHA_LEN:
+            self.check_object_format()
             raise GitError(f"not a commit: {ref!r}")
         return sha
 
-    def branch_exists(self, branch: str) -> bool:
-        return self.ok("show-ref", "--verify", "--quiet", f"refs/heads/{branch}")
+    def resolve_user(self, ref: str) -> str:
+        """A ref typed by a person or an agent: a branch of that name wins over a tag."""
+        if ref and not ref.startswith("-") and self.branch_exists(ref):
+            return self.resolve(heads(ref))
+        return self.resolve(ref)
 
-    def show(self, ref: str, path: str) -> str | None:
-        """File content at a ref, or None when the file does not exist there."""
-        if not self.ok("cat-file", "-e", f"{ref}:{path}"):
+    def branch_exists(self, branch: str) -> bool:
+        return self.ok("show-ref", "--verify", "--quiet", heads(branch))
+
+    def show(self, commit: str, path: str) -> str | None:
+        """File content at a commit, or None when the file does not exist there."""
+        if not self.ok("cat-file", "-e", f"{commit}:{path}"):
             return None
-        return self.run("show", f"{ref}:{path}")
+        return self.run("show", f"{commit}:{path}")
+
+    def parents(self, commit: str) -> list[str]:
+        return self.run("rev-list", "--parents", "-n", "1", commit).split()[1:]
+
+    def changed_files(self, a: str, b: str) -> set[str]:
+        return set(filter(None, self.run("diff", "--name-only", a, b).splitlines()))
+
+    def refs(self) -> dict[str, str]:
+        """Every ref and the object it points to (a snapshot to detect changes)."""
+        out = self.run("for-each-ref", "--format=%(refname) %(objectname)")
+        return dict(line.split(" ", 1) for line in out.splitlines() if line)
 
     def worktrees(self) -> list[Worktree]:
         out: list[Worktree] = []
@@ -90,4 +132,5 @@ class Git:
         return out
 
     def is_clean(self, worktree: Path) -> bool:
-        return self.run("status", "--porcelain", "--untracked-files=no", cwd=worktree) == ""
+        """No staged, unstaged or untracked (not ignored) changes."""
+        return self.run("status", "--porcelain", cwd=worktree) == ""

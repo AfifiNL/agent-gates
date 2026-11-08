@@ -55,7 +55,9 @@ class Repo:
     @classmethod
     def open(cls, path: Path, main: str = "main") -> Repo:
         git = Git(path)
-        return cls(Git(git.toplevel()), main)
+        top = Git(git.toplevel())
+        top.check_object_format()
+        return cls(top, main)
 
     @property
     def root(self) -> Path:

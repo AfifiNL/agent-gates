@@ -2,8 +2,8 @@
 
 * `multiply` adds a feature with a test            -> merged
 * `broken`   changes behaviour and breaks a test     -> rejected by the gate
-* `weaken-gate` breaks a test AND edits the gate config to skip the tests -> still rejected,
-  because the gate reads its configuration from main, not from the lane
+* `weaken-gate` breaks a test AND edits the gate config to skip the tests -> rejected: the
+  gate reads its configuration from main, and a lane may not change it without an operator
 """
 
 from __future__ import annotations
@@ -71,8 +71,10 @@ def run_demo() -> int:
         _git(repo, "config", "user.email", "dev@example.com")
         cli(["-C", str(repo), "init"])
         config = (repo / ".agent-gates.toml").read_text(encoding="utf-8")
-        python = json.dumps([sys.executable, "-m", "unittest", "-q"])
-        config = config.replace('run = "python3 -m unittest -q"', f"run = {python}")
+        python = json.dumps([sys.executable, "-I", "-m", "unittest", "discover", "-q"])
+        config = config.replace('run = "python3 -I -m unittest discover -q"', f"run = {python}")
+        if python not in config:  # pragma: no cover - guards the demo against drift
+            raise RuntimeError("the starter configuration changed; update the demo")
         _commit(
             repo,
             {
@@ -86,6 +88,7 @@ def run_demo() -> int:
         c = ["-C", str(repo)]
 
         _step("specs are checked like code", *c, "spec", "check")
+        _step("gate the starting point once", *c, "gate", "run", "main")
         _step("one lane per unit of work", *c, "lane", "new", "multiply")
         for name in ("broken", "weaken-gate"):
             cli([*c, "lane", "new", name])

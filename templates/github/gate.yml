@@ -1,8 +1,19 @@
 # Template: copy to .github/workflows/gate.yml in the repository you want to protect.
 #
-# Gates the exact commit under test: the pull request's head commit, or, with GitHub's merge
-# queue enabled, the queue's candidate merge commit (`merge_group`). Require the `gate` job in
-# branch protection so nothing reaches main without it.
+# What it gates. On `pull_request` it checks out the pull request's HEAD commit (not GitHub's
+# synthetic merge ref), so the result belongs to a commit you can name. That is not yet the
+# commit that will land on main. On `merge_group` (GitHub's merge queue) it checks out the
+# queue's candidate merge commit: that is the exact commit main will move to. So:
+#   * turn on the merge queue for main, and
+#   * make the `gate` job (and the others you keep) REQUIRED for the queue in branch
+#     protection or a ruleset.
+#
+# What it cannot do. On `pull_request`, GitHub runs the workflow file from the pull request
+# itself, and the job runs the pull request's Makefile and tests. A pull request can therefore
+# edit this file or the checks it calls. The protection comes from (1) the checks being
+# REQUIRED by protected configuration (branch protection / rulesets, or an organisation-level
+# required workflow that pull requests cannot change), (2) code review of changes to this file
+# and the Makefile, and (3) the merge-queue run on the candidate commit.
 #
 # CodeQL and dependency review are free on public repositories; on private repositories they
 # need GitHub Advanced Security (code scanning / dependency graph). Remove those jobs if you do
@@ -39,7 +50,7 @@ jobs:
         run: make check
 
   secret-scan:
-    name: secret scan (gitleaks, full history of the change)
+    name: secret scan (gitleaks, full repository history)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     env:
@@ -79,6 +90,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
+      actions: read
       contents: read
       security-events: write
     steps:

@@ -58,17 +58,20 @@ def test_queue_merges_only_gated_candidates(repo: Repo) -> None:
     assert [h["result"] for h in q.status(repo.state())["history"]] == ["merged", "rejected"]
 
 
+WEAK = 'main = "main"\n[[gate.steps]]\nname = "tests"\nrun = "true"\n'
+
+
 def test_a_lane_cannot_weaken_its_own_gate(repo: Repo) -> None:
-    weak = 'main = "main"\n[[gate.steps]]\nname = "tests"\nrun = "true"\n'
-    path = lane(repo, "sneaky", {**BROKEN, ".agent-gates.toml": weak})
-    # Under its own configuration the lane would pass ...
+    # The lane changes ONLY the configuration; its tests still pass.
+    path = lane(repo, "sneaky", {".agent-gates.toml": WEAK})
     head = git(path, "rev-parse", "HEAD")
-    assert gate.run_gate(repo.git, repo.state(), config.parse(weak), head).passed
-    # ... but the queue uses main's configuration.
+    assert gate.run_gate(repo.git, repo.state(), config.parse(WEAK), head).passed
     q.add(repo.git, repo.state(), "sneaky")
     (outcome,) = q.run(repo.git, repo.state())
     assert outcome.result == "rejected"
-    assert repo.git.resolve("main") == outcome.main_before
+    assert "--allow-config-change sneaky" in outcome.reason
+    assert repo.git.resolve("refs/heads/main") == outcome.main_before
+    assert "true" not in repo.config().steps[0].argv  # later lanes keep the real gate
 
 
 def test_conflicting_lane_is_rejected(repo: Repo) -> None:
@@ -96,8 +99,9 @@ def test_main_moving_during_the_gate_requeues(repo: Repo, monkeypatch: pytest.Mo
 
     def gate_and_race(*args, **kwargs):  # type: ignore[no-untyped-def]
         calls["n"] += 1
-        if calls["n"] == 1:  # someone pushes to main while the first candidate is gated
-            commit(repo.root, {"other.txt": "pushed meanwhile"})
+        if calls["n"] == 1:  # another gated change lands on main while this one is gated
+            sha = commit(repo.root, {"other.txt": "pushed meanwhile"})
+            real(repo.git, repo.state(), repo.config(), sha)
         return real(*args, **kwargs)
 
     monkeypatch.setattr(q, "run_gate", gate_and_race)
@@ -117,7 +121,8 @@ def test_endless_races_stop_the_run_and_keep_the_lane(
 
     def always_race(*args, **kwargs):  # type: ignore[no-untyped-def]
         n["i"] += 1
-        commit(repo.root, {f"race{n['i']}.txt": "x"})
+        sha = commit(repo.root, {f"race{n['i']}.txt": "x"})
+        real(repo.git, repo.state(), repo.config(), sha)
         return real(*args, **kwargs)
 
     monkeypatch.setattr(q, "run_gate", always_race)
@@ -131,7 +136,7 @@ def test_dirty_main_worktree_stops_the_queue(repo: Repo) -> None:
     lane(repo, "good", {"mul.py": "x = 1\n"})
     (repo.root / "calc.py").write_text("# local edit\n")
     q.add(repo.git, repo.state(), "good")
-    with pytest.raises(GitError, match="uncommitted changes"):
+    with pytest.raises(GitError, match="uncommitted or untracked"):
         q.run(repo.git, repo.state())
     assert repo.git.resolve("main") != repo.git.resolve("lane/good")
 

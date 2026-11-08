@@ -10,7 +10,7 @@ from typing import Any
 
 from agent_gates.config import Config
 from agent_gates.gate import get_record
-from agent_gates.git import Git, GitError
+from agent_gates.git import Git, GitError, heads
 from agent_gates.state import State
 
 NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,62}$")
@@ -36,7 +36,7 @@ def new_lane(
     branch = branch_for(name)
     if git.branch_exists(branch):
         raise LaneError(f"lane {name!r} exists already (branch {branch})")
-    base = git.resolve(f"refs/heads/{config.main}")
+    base = git.resolve(heads(config.main))
     root = main_worktree(git)
     wt = path or root.parent / f"{root.name}.lanes" / name
     if wt.exists():
@@ -58,16 +58,16 @@ def new_lane(
 
 def list_lanes(git: Git, state: State, config: Config) -> list[dict[str, Any]]:
     out = []
-    main = f"refs/heads/{config.main}"
+    main = heads(config.main)
     for _name, entry in sorted(state.read("lanes.json", {}).items()):
         row = dict(entry)
         try:
-            head = git.resolve(entry["branch"])
+            head = git.resolve(heads(entry["branch"]))
         except GitError:
             row.update(head=None, status="branch deleted")
             out.append(row)
             continue
-        record = get_record(git, state, head)
+        record = get_record(git, state, head, config)
         merged = git.ok("merge-base", "--is-ancestor", head, main)
         ahead = int(git.run("rev-list", "--count", f"{main}..{head}"))
         row.update(

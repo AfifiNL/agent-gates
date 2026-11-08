@@ -10,7 +10,7 @@ import pytest
 from agent_gates.repo import Repo
 
 ROOT = Path(__file__).resolve().parents[1]
-PY = json.dumps([sys.executable, "-m", "unittest", "-q"])
+PY = json.dumps([sys.executable, "-I", "-m", "unittest", "discover", "-q"])
 CONFIG = f"""\
 main = "main"
 
