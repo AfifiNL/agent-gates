@@ -24,8 +24,8 @@ def test_lane_new_and_list(repo: Repo) -> None:
     path = lane(repo, "feature-a", {"a.txt": "a"})
     assert git(path, "branch", "--show-current") == "lane/feature-a"
     rows = lanes.list_lanes(repo.git, repo.state(), repo.config())
-    assert [(r["name"], r["status"], r["ahead"], r["gate"]) for r in rows] == [
-        ("feature-a", "open", 1, None)
+    assert [(r["name"], r["status"], r["ahead"], r["behind"], r["gate"]) for r in rows] == [
+        ("feature-a", "open", 1, 0, "not gated")
     ]
     with pytest.raises(lanes.LaneError, match="exists already"):
         lanes.new_lane(repo.git, repo.state(), repo.config(), "feature-a")

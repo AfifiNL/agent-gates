@@ -53,6 +53,7 @@ def test_tool_list(repo: Repo) -> None:
         "list_decisions",
         "list_lanes",
         "queue_status",
+        "repo_status",
     ]
 
 

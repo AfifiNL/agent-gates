@@ -106,6 +106,20 @@ protected configuration (branch protection, rulesets, required workflows) togeth
 merge queue. Third-party code runs only from SHA-pinned actions or from a release binary whose
 SHA-256 is checked. Permissions default to read-only.
 
+**Removing a lane is safe by default.** `lane done` deletes a lane's branch only when
+`refs/heads/main` contains its tip (a tag of the same name does not count), its worktree has no
+uncommitted or untracked files, and it is not waiting in the queue. The branch is deleted with a
+compare-and-swap on the tip it checked, and removal runs from the main worktree, so it also
+works when called from inside the lane. `--force` exists on the command line only, for lanes
+that are abandoned on purpose. `queue run --cleanup` applies the same rules right after a merge
+and records "lane kept: <reason>" instead of failing the run.
+
+**One status view, deterministic.** `status` collects main, specs, lanes, the queue and the
+decision log into one structure; the CLI renders it as Markdown (or JSON) and the MCP tool
+`repo_status` returns the structure and the same Markdown. No timestamps, no absolute paths,
+sorted rows and fixed-length SHAs: the same repository state always prints the same text, so
+the output can be diffed, pasted into a review, or compared in a test.
+
 ## Known gaps
 
 - Gate records are not signed, and gate steps can write into `.git`. Anyone (or any step) with
@@ -114,4 +128,3 @@ SHA-256 is checked. Permissions default to read-only.
 - SHA-256 object-format repositories are refused with a clear message (not supported yet).
 - One candidate at a time. Batching or speculative parallel candidates would cut queue time for
   busy repositories.
-- No clean-up of merged lanes yet.

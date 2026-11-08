@@ -61,6 +61,16 @@ def build_server(repo: Repo) -> MCPServer:
         return {"ref": ref, "sha": sha, "passed": ok, "message": message}
 
     @server.tool()
+    def repo_status() -> dict[str, Any]:
+        """Everything at once: main and its gate state, specs with check results, lanes (ahead
+        and behind main, gate state of their head), the merge queue and the decision log.
+        `markdown` is the same summary as `agent-gates status`."""
+        from agent_gates import status
+
+        data = status.collect(repo)
+        return {**data, "markdown": status.render(data)}
+
+    @server.tool()
     def queue_status() -> dict[str, Any]:
         """Lanes waiting in the merge queue, and the last 20 queue outcomes."""
         return queue_mod.status(repo.state())

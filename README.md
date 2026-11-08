@@ -5,8 +5,8 @@ with checkable acceptance criteria, each unit of work gets its own branch and wo
 "lane"), a gate runs the project's checks on one exact commit, and a merge queue moves the main
 branch only to a commit that passed that gate. Decisions go into a numbered log.
 
-- **CLI** (`agent-gates`): `spec check`, `lane new|list`, `gate run|status|verify`,
-  `queue add|run|status`, `decision new|check|list`, `init`, `serve`, `demo`.
+- **CLI** (`agent-gates`): `spec check`, `lane new|list|done`, `gate run|status|verify`,
+  `queue add|run|status`, `decision new|check|list`, `status`, `init`, `serve`, `demo`.
 - **MCP server** (stdio) so an agent can read the specs, a commit's gate status, the queue and
   the decision log, and propose a decision. It cannot run the gate, queue a lane or move a branch.
 - **GitHub workflow template** (`templates/github/gate.yml`) that runs the same checks on the
@@ -46,7 +46,7 @@ Requires Python 3.12+, git 2.31+ and [uv](https://docs.astral.sh/uv/).
 ```bash
 make install     # .venv with dev tools (locked)
 make demo        # the run above, in a temporary repository
-make check       # lint, strict types, 98 tests (what CI runs)
+make check       # lint, strict types, 112 tests (what CI runs)
 ```
 
 In a new repository (run as written in a scratch directory, with a git identity configured):
@@ -94,8 +94,22 @@ run = "python3 -I -m unittest discover -q"   # split like a shell would, run wit
 timeout_s = 600
 ```
 
-MCP: `agent-gates -C /path/to/repo serve` speaks MCP on stdin/stdout. Tools: `check_specs`,
-`gate_status`, `queue_status`, `list_lanes`, `list_decisions`, `add_decision`.
+A longer worked example (a spec, two lanes, one rejected by the gate, one merged, a decision
+recorded, with the real output of one run) is in [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md).
+
+`agent-gates status` prints one Markdown summary: main and its gate state, the specs with their
+check results, the lanes (ahead and behind main, gate state of their head), the merge queue and
+its last outcomes, and the decision log (`--json` for the same data). Two runs on the same state
+print the same text: no timestamps, no absolute paths, sorted rows.
+
+Finished lanes: `agent-gates lane done <name>` removes the worktree and the branch only if main
+contains the lane, its worktree has no uncommitted or untracked files, and it is not queued;
+`--force` removes it anyway and discards its work. `queue run --cleanup` does the same for each
+lane right after it merges, and keeps any lane it cannot remove safely.
+
+MCP: `agent-gates -C /path/to/repo serve` speaks MCP on stdin/stdout. Tools: `repo_status`
+(the `status` summary, as data and Markdown), `check_specs`, `gate_status`, `queue_status`,
+`list_lanes`, `list_decisions`, `add_decision`.
 
 ## How it works
 
@@ -190,8 +204,8 @@ not been run on GitHub from this repository.
   speculative parallel gating.
 - **Spec and decision checks are about structure**, not content: they check that acceptance
   criteria exist and are a checklist, not that they are good.
-- **No automatic lane clean-up.** Merged lanes keep their branch and worktree until removed with
-  git (`git worktree remove`, `git branch -d`).
+- **Clean-up is opt-in.** Merged lanes keep their branch and worktree until `lane done` or
+  `queue run --cleanup`; rejected lanes stay until someone looks at them.
 - SHA-1 repositories only (git's default). Tested on Linux only (it uses `fcntl` file locks).
 
 ## License

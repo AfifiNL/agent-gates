@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,7 @@ from agent_gates import queue as queue_mod
 from agent_gates.config import ConfigError
 from agent_gates.gate import records, run_gate, verify
 from agent_gates.git import GitError
-from agent_gates.lanes import LaneError, list_lanes, new_lane
+from agent_gates.lanes import LaneError, done_lane, list_lanes, new_lane
 from agent_gates.repo import Repo, init
 
 
@@ -50,8 +51,24 @@ def cmd_lane_new(repo: Repo, args: argparse.Namespace) -> int:
     )
     print(
         f"lane {entry['name']}: branch {entry['branch']} at {entry['base_sha'][:12]}, "
-        f"worktree {entry['path']}"
+        f"worktree {os.path.relpath(entry['path'])}"
     )
+    return 0
+
+
+def cmd_lane_done(repo: Repo, args: argparse.Namespace) -> int:
+    print(done_lane(repo.git, repo.state(), repo.config(), args.name, force=args.force))
+    return 0
+
+
+def cmd_status(repo: Repo, args: argparse.Namespace) -> int:
+    from agent_gates import status
+
+    data = status.collect(repo)
+    if args.json:
+        _print_json(data)
+    else:
+        print(status.render(data), end="")
     return 0
 
 
@@ -111,13 +128,19 @@ def cmd_queue_status(repo: Repo, _: argparse.Namespace) -> int:
 
 def cmd_queue_run(repo: Repo, args: argparse.Namespace) -> int:
     outcomes = queue_mod.run(
-        repo.git, repo.state(), repo.main, allow_config_change=frozenset(args.allow_config_change)
+        repo.git,
+        repo.state(),
+        repo.main,
+        allow_config_change=frozenset(args.allow_config_change),
+        cleanup=args.cleanup,
     )
     if not outcomes:
         print("queue is empty")
     for o in outcomes:
         cand = f" (candidate {o.candidate[:12]})" if o.candidate else ""
         print(f"  {o.lane:<20} {o.result:<9} {o.reason}{cand}")
+        if o.cleanup:
+            print(f"  {'':<20} {'cleanup':<9} {o.cleanup}")
     print(f"{repo.main} is at {repo.git.resolve(f'refs/heads/{repo.main}')[:12]}")
     return 1 if any(o.result == "rejected" for o in outcomes) else 0
 
@@ -172,6 +195,9 @@ def build_parser() -> argparse.ArgumentParser:
     add("init", cmd_init, "write a starter config, example spec and first decision")
     add("serve", cmd_serve, "run the MCP server on stdio")
     add("demo", cmd_demo, "run the offline demo in a temporary repository")
+    add(
+        "status", cmd_status, "Markdown summary: main, specs, lanes, queue, decisions"
+    ).add_argument("--json", action="store_true", help="print the same data as JSON")
 
     def group(name: str, help_: str) -> Any:
         return sub.add_parser(name, help=help_).add_subparsers(dest="sub", required=True)
@@ -187,6 +213,13 @@ def build_parser() -> argparse.ArgumentParser:
     leaf(g, "new", cmd_lane_new, "create a lane from main").add_argument("name")
     g.choices["new"].add_argument("--path", default=None)
     leaf(g, "list", cmd_lane_list, "list lanes")
+    done = leaf(g, "done", cmd_lane_done, "remove a merged lane's worktree and branch")
+    done.add_argument("name")
+    done.add_argument(
+        "--force",
+        action="store_true",
+        help="also remove an unmerged, dirty or queued lane (discards its work)",
+    )
     g = group("gate", "the gate on an exact commit")
     leaf(g, "run", cmd_gate_run, "run the gate on a commit").add_argument(
         "ref", nargs="?", default="HEAD"
@@ -198,14 +231,16 @@ def build_parser() -> argparse.ArgumentParser:
     g = group("queue", "the merge queue")
     leaf(g, "add", cmd_queue_add, "queue a lane").add_argument("lane")
     leaf(g, "status", cmd_queue_status, "show the queue and recent outcomes")
-    leaf(
-        g, "run", cmd_queue_run, "merge queued lanes whose candidate passes the gate"
-    ).add_argument(
+    qrun = leaf(g, "run", cmd_queue_run, "merge queued lanes whose candidate passes the gate")
+    qrun.add_argument(
         "--allow-config-change",
         action="append",
         default=[],
         metavar="LANE",
         help="let this lane change the gate configuration (it must pass under old and new)",
+    )
+    qrun.add_argument(
+        "--cleanup", action="store_true", help="remove each merged lane's worktree and branch"
     )
     g = group("decision", "the decision log")
     leaf(g, "new", cmd_decision_new, "add a proposed decision").add_argument("title")

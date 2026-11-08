@@ -16,6 +16,7 @@ the operator's side (main not gated, main's worktree not clean) stop the run and
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import fcntl
 import tempfile
@@ -27,10 +28,10 @@ from typing import Any
 from agent_gates import config as config_mod
 from agent_gates.gate import run_gate, verify
 from agent_gates.git import Git, GitError, heads
-from agent_gates.lanes import branch_for
+from agent_gates.lanes import QUEUE_FILE, LaneError, branch_for, done_lane
 from agent_gates.state import State
 
-QUEUE = "queue.json"
+QUEUE = QUEUE_FILE
 HISTORY = "queue-history.json"
 BOT_NAME = "agent-gates merge queue"
 BOT_EMAIL = "merge-queue@agent-gates.invalid"
@@ -48,6 +49,7 @@ class Outcome:
     candidate: str | None = None
     main_before: str | None = None
     main_after: str | None = None
+    cleanup: str | None = None  # what `--cleanup` did (or why it kept the lane)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -57,6 +59,7 @@ class Outcome:
             "candidate": self.candidate,
             "main_before": self.main_before,
             "main_after": self.main_after,
+            "cleanup": self.cleanup,
             "at": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         }
 
@@ -241,7 +244,10 @@ def run(
     main: str = "main",
     max_requeues: int = 3,
     allow_config_change: Collection[str] = (),
+    cleanup: bool = False,
 ) -> list[Outcome]:
+    """Process the queue. With `cleanup`, a merged lane's worktree and branch are removed
+    afterwards (only if that is safe: see `lanes.done_lane`; otherwise the lane is kept)."""
     lock = state.root / ".queue.lock"
     outcomes: list[Outcome] = []
     requeues = 0
@@ -262,7 +268,6 @@ def run(
                 raise  # operator-side: stop, keep the lane queued
             except Exception as exc:  # one bad lane must not wedge the queue
                 outcome = Outcome(lane, "rejected", f"error: {type(exc).__name__}: {exc}")
-            outcomes.append(outcome)
             with state.locked():
                 queue = state.read(QUEUE, [])
                 if queue and queue[0] == lane:
@@ -275,6 +280,14 @@ def run(
                     requeues += 1
                     stop = requeues >= max_requeues
                 state.write(QUEUE, queue)
+            if cleanup and outcome.result == "merged":
+                try:
+                    note = done_lane(git, state, config_mod.load(git, main), lane)
+                except (LaneError, GitError) as exc:
+                    note = f"lane kept: {exc}"
+                outcome = dataclasses.replace(outcome, cleanup=note)
+            outcomes.append(outcome)
+            with state.locked():
                 history: list[dict[str, Any]] = state.read(HISTORY, [])
                 history.append(outcome.to_json())
                 state.write(HISTORY, history)

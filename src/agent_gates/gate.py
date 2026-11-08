@@ -216,16 +216,26 @@ def accepted_configs(git: Git, current: Config, sha: str) -> dict[str, str]:
     return out
 
 
-def verify(git: Git, state: State, config: Config, sha: str) -> tuple[bool, str]:
-    """Did this exact commit pass the gate under a configuration that applies to it?"""
+def check(git: Git, state: State, config: Config, sha: str) -> tuple[str, str]:
+    """(state, message) for this exact commit: state is "passed", "failed", "not gated" or
+    "other configuration" (only records under a configuration that applies count)."""
     sha = git.resolve(sha)
     rs = records(git, state, sha)
     if not rs:
-        return False, f"{sha[:12]}: no gate record"
+        return "not gated", f"{sha[:12]}: no gate record"
     accepted = accepted_configs(git, config, sha)
     latest = {r.config_sha256: r for r in rs if r.config_sha256 in accepted}  # sorted by time
     if not latest:
-        return False, f"{sha[:12]}: gated under a different configuration; run the gate again"
+        return (
+            "other configuration",
+            f"{sha[:12]}: gated under a different configuration; run the gate again",
+        )
     if not any(r.passed for r in latest.values()):
-        return False, f"{sha[:12]}: gate failed"
-    return True, f"{sha[:12]}: gate passed"
+        return "failed", f"{sha[:12]}: gate failed"
+    return "passed", f"{sha[:12]}: gate passed"
+
+
+def verify(git: Git, state: State, config: Config, sha: str) -> tuple[bool, str]:
+    """Did this exact commit pass the gate under a configuration that applies to it?"""
+    result, message = check(git, state, config, sha)
+    return result == "passed", message
