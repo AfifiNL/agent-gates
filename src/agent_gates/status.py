@@ -1,8 +1,10 @@
 """One summary of a repository: main, specs, lanes, the merge queue and the decision log.
 
 `collect` gathers the data (also served read-only over MCP); `render` turns it into Markdown.
-The output is deterministic: no timestamps, no absolute paths, everything sorted, and short
-SHAs of a fixed length, so two runs on the same repository state print the same text.
+Specs and decisions are read from main's commit, lanes, the queue and gate records from the
+shared state in `.git/agent-gates/`, so the output does not depend on which worktree it is run
+from. No timestamps, rows sorted, SHAs shortened to a fixed length. Stored queue reasons are kept
+free of machine-specific paths when they are written.
 """
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ from typing import Any
 
 from agent_gates import decisions, specs
 from agent_gates import queue as queue_mod
-from agent_gates.config import Config, ConfigError
+from agent_gates.config import Config, ConfigError, safe_relative_dir
 from agent_gates.gate import check
 from agent_gates.git import GitError, heads
 from agent_gates.lanes import list_lanes
@@ -25,10 +27,25 @@ def _short(sha: str | None) -> str:
     return sha[:SHORT] if sha else "-"
 
 
+def _committed_markdown(repo: Repo, commit: str, rel_dir: str) -> list[tuple[str, str]]:
+    """(path, text) of the Markdown files in `rel_dir` as committed in `commit`. Read from git,
+    not from any working tree, so every worktree sees the same thing."""
+    rel = safe_relative_dir(rel_dir, "directory")
+    out = repo.git.run("ls-tree", "--name-only", "-z", commit, f"{rel}/")
+    files = []
+    for path in sorted(filter(None, out.split("\0"))):
+        name = path.rsplit("/", 1)[-1]
+        if name.endswith(".md") and name.lower() != "readme.md":
+            files.append((path, repo.git.show(commit, path) or ""))
+    return files
+
+
 def collect(repo: Repo) -> dict[str, Any]:
+    """Status data. Specs and decisions are read from main's commit (not a working tree);
+    lanes, the queue and gate records from the shared state."""
     data: dict[str, Any] = {"main": {"branch": repo.main}}
     try:
-        main_sha = repo.git.resolve(heads(repo.main))
+        main_sha: str | None = repo.git.resolve(heads(repo.main))
     except GitError:
         main_sha = None
     data["main"]["head"] = main_sha
@@ -42,12 +59,11 @@ def collect(repo: Repo) -> dict[str, Any]:
     if cfg is not None and main_sha is not None:
         data["main"]["gate"] = check(repo.git, repo.state(), cfg, main_sha)[0]
 
+    dirs = cfg or Config()  # main's folders, or the defaults when its config is unreadable
     try:
-        work = repo.working_config()
-    except ConfigError:
-        work = Config()  # unreadable working-tree config: fall back to the default folders
-    try:
-        spec_rows = specs.check_dir(repo.root, work.specs_dir)
+        spec_rows = specs.check_files(
+            _committed_markdown(repo, main_sha, dirs.specs_dir) if main_sha else []
+        )
         data["specs"] = [
             {
                 "path": r.path,
@@ -60,23 +76,21 @@ def collect(repo: Repo) -> dict[str, Any]:
         ]
     except ConfigError as exc:
         data["specs"] = [
-            {"path": work.specs_dir, "title": "", "criteria": 0, "ticked": 0, "errors": [str(exc)]}
+            {"path": dirs.specs_dir, "title": "", "criteria": 0, "ticked": 0, "errors": [str(exc)]}
         ]
 
-    if cfg is not None:
-        data["lanes"] = [
-            {
-                "name": r["name"],
-                "head": r.get("head"),
-                "ahead": r.get("ahead"),
-                "behind": r.get("behind"),
-                "status": r["status"],
-                "gate": r.get("gate"),
-            }
-            for r in list_lanes(repo.git, repo.state(), cfg)
-        ]
-    else:
-        data["lanes"] = []
+    # Lanes need only the main branch name; their gate state needs the configuration.
+    data["lanes"] = [
+        {
+            "name": r["name"],
+            "head": r.get("head"),
+            "ahead": r.get("ahead"),
+            "behind": r.get("behind"),
+            "status": r["status"],
+            "gate": r.get("gate") if cfg is not None else "unknown",
+        }
+        for r in list_lanes(repo.git, repo.state(), repo.main, cfg)
+    ]
 
     q = queue_mod.status(repo.state())
     data["queue"] = {
@@ -93,13 +107,18 @@ def collect(repo: Repo) -> dict[str, Any]:
     }
 
     try:
-        logs = decisions.load(repo.root, work.decisions_dir)
+        logs = [
+            decisions.parse_text(path, text)
+            for path, text in (
+                _committed_markdown(repo, main_sha, dirs.decisions_dir) if main_sha else []
+            )
+        ]
         data["decisions"] = {
             "entries": [
                 {"number": d.number, "title": d.title, "status": d.status}
                 for d in sorted(logs, key=lambda d: (d.number, d.title))
             ],
-            "errors": decisions.check(repo.root, work.decisions_dir),
+            "errors": decisions.check_decisions(logs),
         }
     except ConfigError as exc:
         data["decisions"] = {"entries": [], "errors": [str(exc)]}
@@ -121,7 +140,7 @@ def render(data: dict[str, Any]) -> str:
         else f"gate configuration: ERROR {cfg['error']}"
     )
 
-    out += ["", f"## Specs ({len(data['specs'])})", ""]
+    out += ["", f"## Specs on main ({len(data['specs'])})", ""]
     if data["specs"]:
         out += ["| spec | title | criteria | ticked | check |", "|---|---|---|---|---|"]
         for s in data["specs"]:
@@ -170,7 +189,7 @@ def render(data: dict[str, Any]) -> str:
             )
 
     d = data["decisions"]
-    out += ["", f"## Decisions ({len(d['entries'])})", ""]
+    out += ["", f"## Decisions on main ({len(d['entries'])})", ""]
     if d["entries"]:
         out += ["| # | title | status |", "|---|---|---|"]
         for e in d["entries"]:

@@ -49,19 +49,24 @@ The reasons behind the code stay next to it, and a check keeps the numbering int
 
 @dataclass
 class Repo:
+    """`git` always runs from the main worktree, so it stays valid when a lane worktree (maybe
+    the one the command was started in) is removed. `root` is the worktree the command was
+    started in: `spec check`, `decision new|check|list` and the MCP server work on its files."""
+
     git: Git
     main: str = "main"
+    work_root: Path | None = None
 
     @classmethod
     def open(cls, path: Path, main: str = "main") -> Repo:
-        git = Git(path)
-        top = Git(git.toplevel())
+        top = Git(Git(path).toplevel())
         top.check_object_format()
-        return cls(top, main)
+        main_wt = top.worktrees()[0].path
+        return cls(Git(main_wt), main, top.repo)
 
     @property
     def root(self) -> Path:
-        return self.git.repo
+        return self.work_root or self.git.repo
 
     def state(self) -> State:
         return State(self.git)

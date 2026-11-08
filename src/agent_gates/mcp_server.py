@@ -79,7 +79,7 @@ def build_server(repo: Repo) -> MCPServer:
     def list_lanes() -> list[dict[str, Any]]:
         """Lanes (one branch and worktree each), their head commit and gate result."""
         try:
-            return _list_lanes(repo.git, repo.state(), repo.config())
+            return _list_lanes(repo.git, repo.state(), repo.main, repo.config())
         except ConfigError as exc:
             return [{"error": str(exc)}]
 

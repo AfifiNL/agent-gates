@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -15,7 +14,14 @@ from agent_gates import queue as queue_mod
 from agent_gates.config import ConfigError
 from agent_gates.gate import records, run_gate, verify
 from agent_gates.git import GitError
-from agent_gates.lanes import LaneError, done_lane, list_lanes, new_lane
+from agent_gates.lanes import (
+    LaneError,
+    display,
+    done_lane,
+    list_lanes,
+    main_worktree,
+    new_lane,
+)
 from agent_gates.repo import Repo, init
 
 
@@ -51,7 +57,7 @@ def cmd_lane_new(repo: Repo, args: argparse.Namespace) -> int:
     )
     print(
         f"lane {entry['name']}: branch {entry['branch']} at {entry['base_sha'][:12]}, "
-        f"worktree {os.path.relpath(entry['path'])}"
+        f"worktree {display(main_worktree(repo.git), entry['path'])}"
     )
     return 0
 
@@ -73,11 +79,14 @@ def cmd_status(repo: Repo, args: argparse.Namespace) -> int:
 
 
 def cmd_lane_list(repo: Repo, _: argparse.Namespace) -> int:
-    for row in list_lanes(repo.git, repo.state(), repo.config()):
+    rows = list_lanes(repo.git, repo.state(), repo.main, repo.config())
+    width = max([20, *(len(r["name"]) + 1 for r in rows)])
+    for row in rows:
         head = (row.get("head") or "-")[:12]
         print(
-            f"{row['name']:<20} {row['status']:<14} head {head}  ahead {row.get('ahead', '-')}"
-            f"  gate {row.get('gate') or '-'}"
+            f"{row['name']:<{width}} {row['status']:<14} head {head}  "
+            f"ahead {row.get('ahead', '-')}  behind {row.get('behind', '-')}  "
+            f"gate {row.get('gate') or '-'}"
         )
     return 0
 
@@ -136,11 +145,12 @@ def cmd_queue_run(repo: Repo, args: argparse.Namespace) -> int:
     )
     if not outcomes:
         print("queue is empty")
+    width = max([20, *(len(o.lane) + 1 for o in outcomes)])
     for o in outcomes:
         cand = f" (candidate {o.candidate[:12]})" if o.candidate else ""
-        print(f"  {o.lane:<20} {o.result:<9} {o.reason}{cand}")
+        print(f"  {o.lane:<{width}} {o.result:<9} {o.reason}{cand}")
         if o.cleanup:
-            print(f"  {'':<20} {'cleanup':<9} {o.cleanup}")
+            print(f"  {'':<{width}} {'cleanup':<9} {o.cleanup}")
     print(f"{repo.main} is at {repo.git.resolve(f'refs/heads/{repo.main}')[:12]}")
     return 1 if any(o.result == "rejected" for o in outcomes) else 0
 

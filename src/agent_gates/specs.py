@@ -81,13 +81,18 @@ def check_dir(root: Path, specs_dir: str) -> list[SpecResult]:
     base = inside(root, rel)
     if not base.is_dir():
         return []
-    results = []
+    files = []
     for p in sorted(base.glob("*.md")):
         if p.name.lower() == "readme.md":
             continue
         target = inside(root, f"{rel}/{p.name}")  # a symlinked file must not point outside
-        text = target.read_text(encoding="utf-8", errors="replace")
-        results.append(check_text(f"{rel}/{p.name}", text))
+        files.append((f"{rel}/{p.name}", target.read_text(encoding="utf-8", errors="replace")))
+    return check_files(files)
+
+
+def check_files(files: list[tuple[str, str]]) -> list[SpecResult]:
+    """Check (path, text) pairs, including numbers used twice."""
+    results = [check_text(path, text) for path, text in sorted(files)]
     seen: dict[str, str] = {}
     for r in results:
         if r.number is None:

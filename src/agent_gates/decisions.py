@@ -60,8 +60,11 @@ def slugify(title: str) -> str:
 
 
 def parse(path: Path, rel: str) -> Decision:
-    text = path.read_text(encoding="utf-8", errors="replace")
-    m = FILENAME.match(path.name)
+    return parse_text(rel, path.read_text(encoding="utf-8", errors="replace"))
+
+
+def parse_text(rel: str, text: str) -> Decision:
+    m = FILENAME.match(rel.rsplit("/", 1)[-1])
     first = text.splitlines()[0] if text else ""
     t = TITLE.match(first)
     s = STATUS.search(text)
@@ -99,7 +102,10 @@ def load(root: Path, decisions_dir: str) -> list[Decision]:
 
 
 def check(root: Path, decisions_dir: str) -> list[str]:
-    decisions = load(root, decisions_dir)
+    return check_decisions(load(root, decisions_dir))
+
+
+def check_decisions(decisions: list[Decision]) -> list[str]:
     errors = [e for d in decisions for e in d.errors]
     numbers = sorted(d.number for d in decisions if d.number)
     expected = list(range(1, len(numbers) + 1))

@@ -18,10 +18,12 @@ ag() { say agent-gates "$@"; $AG "$@"; }
 ag_may_fail() { say agent-gates "$@"; set +e; $AG "$@"; echo "(exit $?)"; set -e; }
 show() { say "$@"; "$@"; }
 write() { echo "\$ cat > $1 <<'EOF'   # $2"; tee "$1"; echo "EOF"; }
+go() { echo "\$ cd $1"; cd "$1"; echo "# now in ${PWD#"$ROOT/"}/"; }
 
 cd "$1"
+ROOT=$PWD
 show git init -q -b main shop
-cd shop
+go shop
 git config user.name "Example Dev"
 git config user.email dev@example.com
 
@@ -67,7 +69,7 @@ echo "# Two agents, two lanes."
 ag lane new discount
 ag lane new faster-total
 
-cd ../shop.lanes/discount
+go ../shop.lanes/discount
 write discount.py "the feature, in its own module" <<'EOF'
 from pricing import total
 
@@ -92,13 +94,13 @@ EOF
 show git add -A
 show git commit -qm "Bulk discount from 10 items"
 
-cd ../faster-total
+go ../faster-total
 write pricing.py "a 'speed-up' that drops the cents" <<'EOF'
 def total(prices):
     return int(sum(prices))
 EOF
 show git commit -qam "Faster total"
-cd ../../shop
+go ../../shop
 
 echo
 echo "# Both lanes go into the merge queue."
@@ -111,7 +113,7 @@ ag lane done faster-total --force
 echo
 echo "# The decision behind the feature goes through a lane too."
 ag lane new record-discount-decision
-cd ../shop.lanes/record-discount-decision
+go ../shop.lanes/record-discount-decision
 ag decision new "Bulk discount starts at 10 items"
 DECISION=docs/decisions/0002-bulk-discount-starts-at-10-items.md
 echo "\$ \$EDITOR $DECISION   # accept it and fill in the three sections"
@@ -123,7 +125,7 @@ sed -i -e 's/^- Status: proposed/- Status: accepted/' \
 show cat "$DECISION"
 show git add -A
 show git commit -qm "Record the bulk-discount decision"
-cd ../../shop
+go ../../shop
 ag queue add record-discount-decision
 ag queue run --cleanup
 ag gate verify main

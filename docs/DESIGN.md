@@ -107,18 +107,29 @@ merge queue. Third-party code runs only from SHA-pinned actions or from a releas
 SHA-256 is checked. Permissions default to read-only.
 
 **Removing a lane is safe by default.** `lane done` deletes a lane's branch only when
-`refs/heads/main` contains its tip (a tag of the same name does not count), its worktree has no
-uncommitted or untracked files, and it is not waiting in the queue. The branch is deleted with a
-compare-and-swap on the tip it checked, and removal runs from the main worktree, so it also
-works when called from inside the lane. `--force` exists on the command line only, for lanes
-that are abandoned on purpose. `queue run --cleanup` applies the same rules right after a merge
-and records "lane kept: <reason>" instead of failing the run.
+`refs/heads/main` contains its tip (a tag of the same name does not count), the lane's worktree
+(found from the lane record and from git's worktree list) is still on the lane branch, has no
+uncommitted, untracked or ignored files, and the lane is not waiting in the queue. Ignored files
+count because `git worktree remove` deletes them, and they are often local secrets or settings.
+The branch is deleted with a compare-and-swap on the exact tip that was checked
+(`update-ref -d <ref> <checked tip>`): a commit made after the check keeps the branch, and the
+command says so. `lane done` takes the merge-queue lock, so it cannot remove a lane the queue is
+gating or merging. All git commands run from the main worktree and messages show paths relative
+to it, so the command also works when started inside the lane it removes. `--force` exists on
+the command line only, for lanes abandoned on purpose.
 
-**One status view, deterministic.** `status` collects main, specs, lanes, the queue and the
-decision log into one structure; the CLI renders it as Markdown (or JSON) and the MCP tool
-`repo_status` returns the structure and the same Markdown. No timestamps, no absolute paths,
-sorted rows and fixed-length SHAs: the same repository state always prints the same text, so
-the output can be diffed, pasted into a review, or compared in a test.
+**Clean-up after a merge never hides the merge.** `queue run --cleanup` writes the outcome to the
+queue history first, then removes the lane under the same rules, and records the result (or
+"lane kept: <reason>", whatever went wrong) on that history entry. A failed clean-up never stops
+the run or undoes the merge.
+
+**One status view.** `status` collects main, specs, lanes, the queue and the decision log into
+one structure; the CLI renders it as Markdown (or JSON) and the MCP tool `repo_status` returns
+the structure and the same Markdown. Specs and decisions are read from main's commit through git,
+not from a working tree, and everything else from the shared state, so the text does not depend
+on the folder it is run from. No timestamps, sorted rows, fixed-length SHAs, and queue reasons
+are stored with temporary paths and the repository location replaced by placeholders. The same
+state prints the same text, which a test checks from the main worktree and from a lane.
 
 ## Known gaps
 

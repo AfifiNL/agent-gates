@@ -46,7 +46,7 @@ Requires Python 3.12+, git 2.31+ and [uv](https://docs.astral.sh/uv/).
 ```bash
 make install     # .venv with dev tools (locked)
 make demo        # the run above, in a temporary repository
-make check       # lint, strict types, 112 tests (what CI runs)
+make check       # lint, strict types, 124 tests (what CI runs)
 ```
 
 In a new repository (run as written in a scratch directory, with a git identity configured):
@@ -97,15 +97,20 @@ timeout_s = 600
 A longer worked example (a spec, two lanes, one rejected by the gate, one merged, a decision
 recorded, with the real output of one run) is in [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md).
 
-`agent-gates status` prints one Markdown summary: main and its gate state, the specs with their
-check results, the lanes (ahead and behind main, gate state of their head), the merge queue and
-its last outcomes, and the decision log (`--json` for the same data). Two runs on the same state
-print the same text: no timestamps, no absolute paths, sorted rows.
+`agent-gates status` prints one Markdown summary: main and its gate state, the specs and the
+decision log as committed on main (with their check results), the lanes (ahead and behind main,
+state, gate state of their head), and the merge queue with its last outcomes (`--json` for the
+same data). It reads git and the shared state in `.git/agent-gates/`, not a working tree, so it
+prints the same text from any worktree of the clone while nothing changes. It has no
+timestamps, and the queue stores its reasons without machine-specific paths.
 
 Finished lanes: `agent-gates lane done <name>` removes the worktree and the branch only if main
-contains the lane, its worktree has no uncommitted or untracked files, and it is not queued;
-`--force` removes it anyway and discards its work. `queue run --cleanup` does the same for each
-lane right after it merges, and keeps any lane it cannot remove safely.
+contains the lane, the worktree is still on the lane branch and has no uncommitted, untracked or
+ignored files (removing a worktree deletes ignored files such as a local `.env` too), and the
+lane is not queued. While a queue run is in progress it refuses instead of waiting. `--force` removes
+the lane anyway and discards its work. `queue run --cleanup` applies the same rules to each lane
+right after it merges and records "lane kept: <reason>" for any it cannot remove safely. Both
+work from inside the lane's own folder.
 
 MCP: `agent-gates -C /path/to/repo serve` speaks MCP on stdin/stdout. Tools: `repo_status`
 (the `status` summary, as data and Markdown), `check_specs`, `gate_status`, `queue_status`,

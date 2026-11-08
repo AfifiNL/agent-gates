@@ -45,7 +45,7 @@ def test_done_removes_a_merged_lane(repo: Repo) -> None:
     assert message.startswith("lane good: removed worktree")
     assert not path.exists()
     assert not repo.git.branch_exists("lane/good")
-    assert lanes.list_lanes(repo.git, repo.state(), repo.config()) == []
+    assert lanes.list_lanes(repo.git, repo.state(), "main", repo.config()) == []
     assert len(repo.git.worktrees()) == 1
 
 
@@ -64,7 +64,7 @@ def test_done_refuses_a_dirty_worktree_unless_forced(repo: Repo) -> None:
     path = lane(repo, "good", {"mul.py": "x = 1\n"})
     merge(repo, "good")
     (path / "notes.txt").write_text("not committed")  # untracked counts as dirty
-    with pytest.raises(lanes.LaneError, match="uncommitted or untracked"):
+    with pytest.raises(lanes.LaneError, match="has untracked files"):
         lanes.done_lane(repo.git, repo.state(), repo.config(), "good")
     assert (path / "notes.txt").exists()
     lanes.done_lane(repo.git, repo.state(), repo.config(), "good", force=True)
@@ -155,9 +155,11 @@ def _scenario(repo: Repo) -> dict[str, str]:
     lane(repo, "bad", BROKEN)
     idle = lane(repo, "idle", {"idle.txt": "x"})
     outcomes = merge(repo, "good", "bad")
+    # someone commits a broken spec straight to main, outside the queue
+    commit(repo.root, {"docs/specs/002-draft.md": "no title\n"}, "draft spec")
+    (repo.root / "docs" / "specs" / "003-local.md").write_text("not committed\n")  # ignored
     lanes.new_lane(repo.git, repo.state(), repo.config(), "queued")
     q.add(repo.git, repo.state(), "queued")
-    (repo.root / "docs" / "specs" / "002-draft.md").write_text("no title\n")  # uncommitted
     sha = repo.git.resolve
     return {
         "main": sha("refs/heads/main")[:12],
@@ -173,10 +175,10 @@ def _scenario(repo: Repo) -> dict[str, str]:
 EXPECTED = """\
 # agent-gates status
 
-main: `main` at `{main}`, gate: passed
+main: `main` at `{main}`, gate: not gated
 gate steps (from main): tests
 
-## Specs (2)
+## Specs on main (2)
 
 | spec | title | criteria | ticked | check |
 |---|---|---|---|---|
@@ -192,10 +194,10 @@ gate steps (from main): tests
 
 | lane | head | ahead | behind | state | gate on head |
 |---|---|---|---|---|---|
-| bad | `{bad}` | 1 | 2 | open | not gated |
-| good | `{good}` | 0 | 1 | merged | not gated |
-| idle | `{idle}` | 1 | 2 | open | not gated |
-| queued | `{queued}` | 0 | 0 | merged | passed |
+| bad | `{bad}` | 1 | 3 | open | not gated |
+| good | `{good}` | 0 | 2 | merged | not gated |
+| idle | `{idle}` | 1 | 3 | open | not gated |
+| queued | `{queued}` | 0 | 0 | no commits yet | not gated |
 
 ## Merge queue
 
@@ -208,7 +210,7 @@ Last 2 outcome(s), oldest first:
 | good | merged | `{c_good}` | gate passed on the candidate |
 | bad | rejected | `{c_bad}` | gate failed at step 'tests' (current configuration) |
 
-## Decisions (1)
+## Decisions on main (1)
 
 | # | title | status |
 |---|---|---|
@@ -223,6 +225,9 @@ def test_status_markdown_is_exact_and_deterministic(repo: Repo) -> None:
     first = status.render(status.collect(repo))
     assert first == EXPECTED.format(**shas)
     assert status.render(status.collect(repo)) == first
+    # the same text from inside a lane worktree (its own files differ from main's)
+    idle = Repo.open(repo.root.parent / "proj.lanes" / "idle")
+    assert status.render(status.collect(idle)) == first
 
 
 def test_status_cli_markdown_json_and_mcp_agree(

@@ -16,9 +16,10 @@ the operator's side (main not gated, main's worktree not clean) stop the run and
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import datetime as dt
-import fcntl
+import re
 import tempfile
 from collections.abc import Collection
 from dataclasses import dataclass
@@ -28,7 +29,7 @@ from typing import Any
 from agent_gates import config as config_mod
 from agent_gates.gate import run_gate, verify
 from agent_gates.git import Git, GitError, heads
-from agent_gates.lanes import QUEUE_FILE, LaneError, branch_for, done_lane
+from agent_gates.lanes import QUEUE_FILE, LaneError, branch_for, done_lane, queue_lock
 from agent_gates.state import State
 
 QUEUE = QUEUE_FILE
@@ -238,6 +239,17 @@ def _process(
         git.run("update-ref", "-d", f"refs/agent-gates/candidates/{lane}", check=False)
 
 
+_TEMP = re.compile(re.escape(tempfile.gettempdir()) + r"/agent-gates-[^\s'\":]*")
+
+
+def _scrub(text: str, git: Git) -> str:
+    """Keep stored reasons free of machine-specific paths: temporary worktrees and the
+    repository's own location are replaced by placeholders."""
+    text = _TEMP.sub("<temporary worktree>", text)
+    root = str(git.repo)
+    return text.replace(root, "<repo>").replace(str(Path(root).parent), "<repo>/..")
+
+
 def run(
     git: Git,
     state: State,
@@ -247,15 +259,16 @@ def run(
     cleanup: bool = False,
 ) -> list[Outcome]:
     """Process the queue. With `cleanup`, a merged lane's worktree and branch are removed
-    afterwards (only if that is safe: see `lanes.done_lane`; otherwise the lane is kept)."""
-    lock = state.root / ".queue.lock"
+    afterwards (only if that is safe: see `lanes.done_lane`; otherwise the lane is kept). The
+    outcome is written to the history before the clean-up starts, and a failed clean-up is
+    recorded on that entry instead of stopping the run."""
     outcomes: list[Outcome] = []
     requeues = 0
-    with lock.open("w") as fh:
+    with contextlib.ExitStack() as stack:
         try:
-            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)  # one queue runner at a time
-        except BlockingIOError:
-            raise QueueBlocked("another merge-queue run is in progress") from None
+            stack.enter_context(queue_lock(state))  # one queue runner at a time
+        except LaneError as exc:
+            raise QueueBlocked(str(exc)) from None
         while True:
             with state.locked():
                 queue: list[str] = state.read(QUEUE, [])
@@ -268,6 +281,7 @@ def run(
                 raise  # operator-side: stop, keep the lane queued
             except Exception as exc:  # one bad lane must not wedge the queue
                 outcome = Outcome(lane, "rejected", f"error: {type(exc).__name__}: {exc}")
+            outcome = dataclasses.replace(outcome, reason=_scrub(outcome.reason, git))
             with state.locked():
                 queue = state.read(QUEUE, [])
                 if queue and queue[0] == lane:
@@ -280,17 +294,25 @@ def run(
                     requeues += 1
                     stop = requeues >= max_requeues
                 state.write(QUEUE, queue)
-            if cleanup and outcome.result == "merged":
-                try:
-                    note = done_lane(git, state, config_mod.load(git, main), lane)
-                except (LaneError, GitError) as exc:
-                    note = f"lane kept: {exc}"
-                outcome = dataclasses.replace(outcome, cleanup=note)
-            outcomes.append(outcome)
-            with state.locked():
                 history: list[dict[str, Any]] = state.read(HISTORY, [])
                 history.append(outcome.to_json())
+                entry = len(history) - 1
                 state.write(HISTORY, history)
+            if cleanup and outcome.result == "merged":
+                try:
+                    note = done_lane(
+                        git, state, config_mod.load(git, main), lane, queue_locked=True
+                    )
+                except Exception as exc:  # clean-up never undoes or hides a merge
+                    note = f"lane kept: {exc}"
+                note = _scrub(note, git)
+                outcome = dataclasses.replace(outcome, cleanup=note)
+                with state.locked():
+                    history = state.read(HISTORY, [])
+                    if entry < len(history) and history[entry]["lane"] == lane:
+                        history[entry]["cleanup"] = note
+                        state.write(HISTORY, history)
+            outcomes.append(outcome)
             if stop:
                 break
     return outcomes

@@ -23,7 +23,7 @@ def lane(repo: Repo, name: str, files: dict[str, str]) -> Path:
 def test_lane_new_and_list(repo: Repo) -> None:
     path = lane(repo, "feature-a", {"a.txt": "a"})
     assert git(path, "branch", "--show-current") == "lane/feature-a"
-    rows = lanes.list_lanes(repo.git, repo.state(), repo.config())
+    rows = lanes.list_lanes(repo.git, repo.state(), "main", repo.config())
     assert [(r["name"], r["status"], r["ahead"], r["behind"], r["gate"]) for r in rows] == [
         ("feature-a", "open", 1, 0, "not gated")
     ]
